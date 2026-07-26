@@ -1,0 +1,1497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Kirana POS — Quick Billing</title>
+
+<!-- Fonts: Manrope for display/headings, Inter for UI body text, JetBrains Mono for all price/number figures (the register-tape signature) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          display: ['Manrope', 'sans-serif'],
+          body: ['Inter', 'sans-serif'],
+          mono: ['JetBrains Mono', 'monospace'],
+        },
+        colors: {
+          // Kirana palette: rice-paper cream + spinach green + turmeric amber
+          leaf: { 50:'#EEF5EF',100:'#D9EADC',200:'#B3D5BA',300:'#84B892',400:'#4F8F63',500:'#2F6F4E',600:'#245A3F',700:'#1C4732',800:'#163829',900:'#102A1F'},
+          turmeric: { 50:'#FDF3E2',100:'#FAE3B8',200:'#F3C877',300:'#EBAC43',400:'#D98E2B',500:'#B87420',600:'#935B18'},
+          paper: { 50:'#FBFAF6', 100:'#F7F5EF', 200:'#EFEBE0'},
+          crate: { 900:'#14201A', 800:'#1A2A22', 700:'#20342A', 600:'#2A4136'}
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(20,32,26,0.06), 0 4px 14px -6px rgba(20,32,26,0.12)',
+          cardHover: '0 2px 4px rgba(20,32,26,0.08), 0 10px 24px -8px rgba(20,32,26,0.18)',
+        }
+      }
+    }
+  }
+</script>
+
+<style>
+  /* Custom scrollbars — thin, quiet, themed */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(47,111,78,0.35); border-radius: 999px; }
+  .dark ::-webkit-scrollbar-thumb { background: rgba(180,213,190,0.25); }
+
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Inter', sans-serif; }
+
+  /* The register-tape LED display used ONLY for the grand total — the one signature flourish */
+  .led-display {
+    font-family: 'JetBrains Mono', monospace;
+    background: #0E1712;
+    color: #7CF0A4;
+    text-shadow: 0 0 8px rgba(124,240,164,0.55), 0 0 2px rgba(124,240,164,0.8);
+    letter-spacing: 0.02em;
+  }
+  .dark .led-display { background: #060B08; }
+
+  /* Card lift + fade-in */
+  @keyframes cardIn { from { opacity: 0; transform: translateY(6px) scale(0.98);} to { opacity: 1; transform: translateY(0) scale(1);} }
+  .card-in { animation: cardIn 0.22s ease-out both; }
+
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-8px) translateX(0);} to { opacity: 1; transform: translateY(0);} }
+  .toast-in { animation: toastIn 0.25s cubic-bezier(.2,.9,.3,1.2) both; }
+
+  @keyframes pulseAdd { 0% { transform: scale(1);} 40% { transform: scale(0.96);} 100% { transform: scale(1);} }
+  .pulse-add { animation: pulseAdd 0.22s ease; }
+
+  @keyframes slideUp { from { transform: translateY(100%);} to { transform: translateY(0);} }
+  .drawer-in { animation: slideUp 0.28s cubic-bezier(.2,.9,.3,1.1) both; }
+
+  .cat-scroll::-webkit-scrollbar { display: none; }
+  .cat-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+  [contenteditable]:focus { outline: none; }
+
+  .selected-row { box-shadow: inset 0 0 0 2px #2F6F4E; }
+  .dark .selected-row { box-shadow: inset 0 0 0 2px #84B892; }
+
+  /* Reduced motion respect */
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  }
+
+  /* Print: only the bill shows. The unscoped display:none must come first so the
+     @media print rule (which restores display:block) wins the cascade when printing. */
+  #print-bill { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    #print-bill, #print-bill * { visibility: visible; }
+    #print-bill { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+  }
+</style>
+</head>
+
+<body class="bg-paper-100 dark:bg-crate-900 text-crate-900 dark:text-paper-100 font-body transition-colors duration-300 min-h-screen">
+
+<!-- ============================= HEADER ============================= -->
+<header class="sticky top-0 z-40 bg-paper-50/90 dark:bg-crate-900/90 backdrop-blur border-b border-leaf-200/60 dark:border-crate-700">
+  <div class="max-w-[1600px] mx-auto px-3 sm:px-5 py-3 flex items-center gap-3">
+    <!-- Mobile category toggle -->
+    <button id="mobileCatBtn" class="lg:hidden p-2 rounded-lg bg-leaf-100 dark:bg-crate-700 text-leaf-700 dark:text-leaf-200" aria-label="Toggle categories">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+    </button>
+
+    <div class="flex items-center gap-2 shrink-0">
+      <div class="w-9 h-9 rounded-xl bg-leaf-600 text-white flex items-center justify-center font-display font-800 text-lg shadow-card">₹</div>
+      <div class="hidden sm:block">
+        <h1 class="font-display font-800 text-lg leading-tight text-leaf-800 dark:text-leaf-100">Kirana POS</h1>
+        <p class="text-[11px] text-crate-600/70 dark:text-paper-200/50 leading-none">Quick billing counter</p>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <div class="flex-1 max-w-xl relative">
+      <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-crate-600/50 dark:text-paper-200/40" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="searchInput" type="text" placeholder="Search products…  (press /)"
+        class="w-full pl-9 pr-3 py-2 rounded-xl bg-white dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm placeholder:text-crate-500/50 dark:placeholder:text-paper-200/40 focus:outline-none focus:ring-2 focus:ring-leaf-400 transition" />
+    </div>
+
+    <!-- Header actions -->
+    <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+      <button id="importBtn" title="Import products (JSON)" class="p-2 rounded-lg hover:bg-leaf-100 dark:hover:bg-crate-700 text-leaf-700 dark:text-leaf-200 transition hidden sm:flex">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <input id="importFile" type="file" accept=".json,application/json" class="hidden" />
+      <button id="exportBtn" title="Export products (JSON)" class="p-2 rounded-lg hover:bg-leaf-100 dark:hover:bg-crate-700 text-leaf-700 dark:text-leaf-200 transition hidden sm:flex">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </button>
+      <button id="themeToggle" title="Toggle dark mode" class="p-2 rounded-lg hover:bg-leaf-100 dark:hover:bg-crate-700 text-leaf-700 dark:text-leaf-200 transition">
+        <svg id="iconSun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="hidden"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg id="iconMoon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+      <button id="addProductBtn" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-semibold shadow-card transition">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span class="hidden sm:inline">Add Product</span>
+      </button>
+      <!-- Mobile cart toggle -->
+      <button id="mobileCartBtn" class="lg:hidden relative p-2 rounded-lg bg-turmeric-400 text-white shadow-card">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+        <span id="mobileCartCount" class="absolute -top-1.5 -right-1.5 bg-leaf-700 text-white text-[10px] rounded-full w-4.5 h-4.5 min-w-[18px] h-[18px] flex items-center justify-center font-bold">0</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ============================= MAIN LAYOUT ============================= -->
+<div class="max-w-[1600px] mx-auto flex flex-col lg:flex-row gap-0 lg:gap-4 px-0 lg:px-5 py-0 lg:py-4">
+
+  <!-- ---------- SIDEBAR: Categories (desktop) ---------- -->
+  <aside id="catSidebar" class="hidden lg:flex flex-col w-56 shrink-0 gap-3">
+    <div class="bg-white dark:bg-crate-800 rounded-2xl shadow-card p-3 sticky top-[72px]">
+      <h2 class="font-display font-700 text-xs uppercase tracking-wide text-crate-600 dark:text-paper-200/60 px-2 mb-2">Categories</h2>
+      <div id="categoryList" class="flex flex-col gap-1 max-h-[60vh] overflow-y-auto"></div>
+      <button id="addCategoryBtn" class="mt-2 w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-medium text-leaf-700 dark:text-leaf-200 hover:bg-leaf-50 dark:hover:bg-crate-700 transition">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add category
+      </button>
+    </div>
+  </aside>
+
+  <!-- Mobile categories drawer -->
+  <div id="mobileCatDrawer" class="lg:hidden hidden fixed inset-0 z-50">
+    <div class="absolute inset-0 bg-black/40" data-close-mobile-cat></div>
+    <div class="drawer-in absolute left-0 top-0 bottom-0 w-72 bg-white dark:bg-crate-800 p-4 overflow-y-auto">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-display font-700">Categories</h2>
+        <button data-close-mobile-cat class="p-1 rounded hover:bg-leaf-100 dark:hover:bg-crate-700">✕</button>
+      </div>
+      <div id="categoryListMobile" class="flex flex-col gap-1"></div>
+      <button id="addCategoryBtnMobile" class="mt-2 w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-medium text-leaf-700 dark:text-leaf-200 hover:bg-leaf-50 dark:hover:bg-crate-700 transition">
+        + Add category
+      </button>
+    </div>
+  </div>
+
+  <!-- ---------- MAIN: Product Grid ---------- -->
+  <main class="flex-1 min-w-0 px-3 sm:px-5 lg:px-0 pb-40 lg:pb-6 pt-3">
+    <!-- Filter chips row -->
+    <div class="flex items-center gap-2 mb-3 overflow-x-auto cat-scroll pb-1">
+      <button data-filter="all" class="filter-chip shrink-0 px-3 py-1.5 rounded-full text-sm font-medium bg-leaf-600 text-white shadow-card">All Products</button>
+      <button data-filter="favourites" class="filter-chip shrink-0 px-3 py-1.5 rounded-full text-sm font-medium bg-white dark:bg-crate-800 text-crate-700 dark:text-paper-200 border border-leaf-200 dark:border-crate-600 flex items-center gap-1">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" class="text-turmeric-400"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"/></svg>
+        Favourites
+      </button>
+      <button data-filter="recent" class="filter-chip shrink-0 px-3 py-1.5 rounded-full text-sm font-medium bg-white dark:bg-crate-800 text-crate-700 dark:text-paper-200 border border-leaf-200 dark:border-crate-600">Recently Used</button>
+    </div>
+
+    <div class="flex items-center justify-between mb-3">
+      <h2 id="gridTitle" class="font-display font-700 text-base text-crate-800 dark:text-paper-100">All Products</h2>
+      <span id="gridCount" class="text-xs text-crate-500 dark:text-paper-200/50"></span>
+    </div>
+
+    <div id="productGrid" class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3"></div>
+
+    <!-- Empty state: no products -->
+    <div id="emptyProducts" class="hidden flex-col items-center justify-center text-center py-16 gap-3">
+      <div class="w-20 h-20 rounded-full bg-leaf-100 dark:bg-crate-800 flex items-center justify-center">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" class="text-leaf-500"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 4.6A1 1 0 005.6 19H19"/><circle cx="9" cy="21" r="1"/><circle cx="19" cy="21" r="1"/></svg>
+      </div>
+      <p class="font-display font-700 text-crate-700 dark:text-paper-100">No products here yet</p>
+      <p class="text-sm text-crate-500 dark:text-paper-200/50 max-w-xs">Add your first product to start billing, or try a different search or category.</p>
+      <button data-open-add class="px-4 py-2 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-semibold shadow-card transition">Add a product</button>
+    </div>
+  </main>
+
+  <!-- ---------- SIDEBAR: Cart (desktop) ---------- -->
+  <aside class="hidden lg:flex flex-col w-96 shrink-0 sticky top-[72px] h-[calc(100vh-88px)]">
+    <div id="cartPanelDesktop" class="flex flex-col min-h-0 flex-1"></div>
+  </aside>
+</div>
+
+<!-- Mobile cart bottom drawer -->
+<div id="mobileCartDrawer" class="lg:hidden hidden fixed inset-0 z-50">
+  <div class="absolute inset-0 bg-black/40" data-close-mobile-cart></div>
+  <div class="drawer-in absolute left-0 right-0 bottom-0 h-[88vh] bg-paper-50 dark:bg-crate-900 rounded-t-2xl overflow-hidden flex flex-col">
+    <div id="cartPanelMobile" class="flex flex-col min-h-0 flex-1"></div>
+  </div>
+</div>
+
+<!-- Mobile mini cart bar (visible when drawer closed & cart non-empty) -->
+<div id="mobileMiniBar" class="hidden lg:hidden fixed bottom-3 left-3 right-3 z-30">
+  <button id="mobileMiniBarBtn" class="w-full flex items-center justify-between bg-leaf-700 text-white rounded-2xl shadow-cardHover px-4 py-3">
+    <span id="mobileMiniBarInfo" class="text-sm font-semibold"></span>
+    <span id="mobileMiniBarTotal" class="font-mono font-700 text-base"></span>
+  </button>
+</div>
+
+<!-- ============================= CART TEMPLATE (cloned into desktop/mobile) ============================= -->
+<template id="cartTemplate">
+  <div class="bg-white dark:bg-crate-800 rounded-2xl shadow-card flex flex-col h-full overflow-hidden">
+    <div class="shrink-0 p-4 border-b border-leaf-100 dark:border-crate-700 flex items-center justify-between">
+      <h2 class="font-display font-700 text-base flex items-center gap-2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-leaf-600"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+        Current Bill
+      </h2>
+      <button data-close-mobile-cart class="lg:hidden p-1 rounded hover:bg-leaf-100 dark:hover:bg-crate-700">✕</button>
+    </div>
+
+    <div class="cart-items flex-1 min-h-0 overflow-y-auto px-3 py-2"></div>
+
+    <!-- Empty cart state -->
+    <div class="cart-empty hidden flex-1 min-h-0 flex-col items-center justify-center text-center py-10 gap-2 px-4">
+      <div class="w-14 h-14 rounded-full bg-leaf-50 dark:bg-crate-700 flex items-center justify-center">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" class="text-leaf-400"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+      </div>
+      <p class="text-sm font-semibold text-crate-700 dark:text-paper-100">Cart is empty</p>
+      <p class="text-xs text-crate-500 dark:text-paper-200/50">Tap a product to add it to the bill</p>
+    </div>
+
+    <!-- Total & actions — a fixed footer, always visible, never scrolls away -->
+    <div class="shrink-0 border-t border-leaf-100 dark:border-crate-700 p-3 flex flex-col gap-2.5 bg-paper-50 dark:bg-crate-900 rounded-b-2xl">
+      <div class="flex justify-between text-xs text-crate-600 dark:text-paper-200/60">
+        <span class="cart-meta"></span>
+        <button class="discount-btn font-semibold text-turmeric-500 hover:text-turmeric-600">+ Discount</button>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span class="text-crate-600 dark:text-paper-200/70">Subtotal</span>
+        <span class="cart-subtotal font-mono font-600"></span>
+      </div>
+      <div class="discount-row hidden flex justify-between text-sm text-turmeric-500">
+        <span class="discount-label"></span>
+        <span class="cart-discount font-mono font-600"></span>
+      </div>
+      <div class="led-display rounded-xl px-4 py-3 flex items-center justify-between mt-1">
+        <span class="text-xs uppercase tracking-wider opacity-80">Grand Total</span>
+        <span class="cart-total font-mono font-700 text-2xl"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mt-1">
+        <button class="new-bill-btn px-3 py-2.5 rounded-xl bg-crate-100 dark:bg-crate-700 hover:bg-crate-200 dark:hover:bg-crate-600 text-crate-700 dark:text-paper-100 text-sm font-semibold transition">New Bill</button>
+        <button class="clear-cart-btn px-3 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 text-sm font-semibold transition">Clear Cart</button>
+      </div>
+      <button class="print-btn w-full px-3 py-2.5 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-bold shadow-card transition flex items-center justify-center gap-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        Print Bill
+      </button>
+    </div>
+  </div>
+</template>
+
+<!-- Cart line-item template -->
+<template id="cartItemTemplate">
+  <div class="cart-row group relative rounded-xl px-2.5 py-2 mb-1.5 hover:bg-leaf-50 dark:hover:bg-crate-700/60 transition cursor-pointer" data-id="">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <p class="item-name text-sm font-semibold text-crate-800 dark:text-paper-100 truncate"></p>
+        <p class="item-price-line text-[11px] text-crate-500 dark:text-paper-200/50 font-mono"></p>
+      </div>
+      <button class="remove-item shrink-0 p-1 rounded-lg text-crate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="flex items-center justify-between mt-1.5">
+      <div class="flex items-center gap-1">
+        <button class="qty-dec w-6 h-6 rounded-lg bg-leaf-100 dark:bg-crate-600 text-leaf-700 dark:text-leaf-200 font-bold text-sm flex items-center justify-center hover:bg-leaf-200 dark:hover:bg-crate-500 transition">−</button>
+        <input type="number" step="any" min="0" class="qty-input w-14 text-center text-sm font-mono font-600 bg-transparent border border-leaf-200 dark:border-crate-600 rounded-lg py-0.5" />
+        <span class="unit-label text-[11px] text-crate-500 dark:text-paper-200/50"></span>
+        <button class="qty-inc w-6 h-6 rounded-lg bg-leaf-100 dark:bg-crate-600 text-leaf-700 dark:text-leaf-200 font-bold text-sm flex items-center justify-center hover:bg-leaf-200 dark:hover:bg-crate-500 transition">+</button>
+      </div>
+      <span class="line-total font-mono font-700 text-sm text-leaf-700 dark:text-leaf-200"></span>
+    </div>
+  </div>
+</template>
+
+<!-- Product card template -->
+<template id="productCardTemplate">
+  <div class="product-card card-in group relative bg-white dark:bg-crate-800 rounded-2xl shadow-card hover:shadow-cardHover p-3 cursor-pointer border border-transparent hover:border-leaf-300 dark:hover:border-leaf-600 transition-all" data-id="">
+    <button class="fav-toggle absolute top-2 left-2 z-10 p-1 rounded-full bg-white/80 dark:bg-crate-900/70 backdrop-blur">
+      <svg class="fav-star" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"/></svg>
+    </button>
+    <div class="card-actions absolute top-2 right-2 z-10 hidden group-hover:flex gap-1">
+      <button class="edit-product p-1.5 rounded-full bg-white/90 dark:bg-crate-900/80 text-leaf-600 hover:bg-leaf-100 dark:hover:bg-crate-700">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z"/></svg>
+      </button>
+      <button class="delete-product p-1.5 rounded-full bg-white/90 dark:bg-crate-900/80 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 11v6M14 11v6M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/></svg>
+      </button>
+    </div>
+    <div class="img-wrap w-full h-20 rounded-xl bg-leaf-50 dark:bg-crate-700 flex items-center justify-center overflow-hidden mb-2 mt-3">
+      <img class="prod-img hidden w-full h-full object-cover" />
+      <span class="fallback-initial font-display font-800 text-2xl text-leaf-400 dark:text-leaf-500"></span>
+    </div>
+    <p class="prod-name text-sm font-semibold text-crate-800 dark:text-paper-100 leading-snug line-clamp-2 min-h-[2.4em]"></p>
+    <div class="flex items-baseline justify-between mt-1.5">
+      <span class="prod-price font-mono font-700 text-leaf-700 dark:text-leaf-300 text-[15px]"></span>
+      <span class="prod-unit text-[11px] text-crate-500 dark:text-paper-200/50"></span>
+    </div>
+  </div>
+</template>
+
+<!-- ============================= MODALS ============================= -->
+
+<!-- Product Add/Edit Modal -->
+<div id="productModal" class="hidden fixed inset-0 z-[60] items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/50" data-close-modal="productModal"></div>
+  <div class="relative bg-white dark:bg-crate-800 rounded-2xl shadow-cardHover w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-4">
+      <h3 id="productModalTitle" class="font-display font-700 text-lg">Add Product</h3>
+      <button data-close-modal="productModal" class="p-1 rounded hover:bg-leaf-100 dark:hover:bg-crate-700">✕</button>
+    </div>
+    <form id="productForm" class="flex flex-col gap-3">
+      <input type="hidden" id="pf_id" />
+      <div>
+        <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Name</label>
+        <input required id="pf_name" type="text" placeholder="e.g. Toor Dal" class="mt-1 w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Price (₹)</label>
+          <input required id="pf_price" type="number" step="0.01" min="0" placeholder="0.00" class="mt-1 w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+        </div>
+        <div>
+          <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Unit</label>
+          <select id="pf_unit" class="mt-1 w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400">
+            <option value="kg">kg</option>
+            <option value="gram">gram</option>
+            <option value="litre">litre</option>
+            <option value="ml">ml</option>
+            <option value="piece">piece</option>
+            <option value="packet">packet</option>
+            <option value="box">box</option>
+            <option value="dozen">dozen</option>
+            <option value="custom">custom…</option>
+          </select>
+        </div>
+      </div>
+      <div id="pf_customUnitWrap" class="hidden">
+        <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Custom unit</label>
+        <input id="pf_customUnit" type="text" placeholder="e.g. bundle" class="mt-1 w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Category</label>
+        <select id="pf_category" class="mt-1 w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400"></select>
+      </div>
+      <div>
+        <label class="text-xs font-semibold text-crate-600 dark:text-paper-200/60">Image (optional)</label>
+        <div class="mt-1 flex items-center gap-2">
+          <input id="pf_image" type="text" placeholder="https://… or upload below" class="flex-1 px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+          <img id="pf_imagePreview" class="hidden w-9 h-9 rounded-lg object-cover border border-leaf-200 dark:border-crate-600" />
+        </div>
+        <div class="flex items-center gap-2 mt-1.5">
+          <label class="cursor-pointer inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-leaf-50 dark:bg-crate-700 text-leaf-700 dark:text-leaf-200 text-xs font-semibold hover:bg-leaf-100 dark:hover:bg-crate-600 transition">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload from device
+            <input id="pf_imageFile" type="file" accept="image/*" class="hidden" />
+          </label>
+          <button type="button" id="pf_imageClear" class="hidden text-xs font-semibold text-red-500 hover:text-red-600">Remove image</button>
+        </div>
+      </div>
+      <label class="flex items-center gap-2 text-sm font-medium mt-1">
+        <input id="pf_fav" type="checkbox" class="w-4 h-4 rounded accent-turmeric-400" />
+        Mark as favourite
+      </label>
+      <div class="flex gap-2 mt-2">
+        <button type="button" data-close-modal="productModal" class="flex-1 px-3 py-2.5 rounded-xl bg-crate-100 dark:bg-crate-700 text-crate-700 dark:text-paper-100 text-sm font-semibold hover:bg-crate-200 dark:hover:bg-crate-600 transition">Cancel</button>
+        <button type="submit" class="flex-1 px-3 py-2.5 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-bold shadow-card transition">Save Product</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Category Add Modal -->
+<div id="categoryModal" class="hidden fixed inset-0 z-[60] items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/50" data-close-modal="categoryModal"></div>
+  <div class="relative bg-white dark:bg-crate-800 rounded-2xl shadow-cardHover w-full max-w-sm p-5">
+    <h3 class="font-display font-700 text-lg mb-4">Add Category</h3>
+    <form id="categoryForm" class="flex flex-col gap-3">
+      <input required id="cf_name" type="text" placeholder="e.g. Dairy" class="w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+      <div class="flex gap-2">
+        <button type="button" data-close-modal="categoryModal" class="flex-1 px-3 py-2.5 rounded-xl bg-crate-100 dark:bg-crate-700 text-crate-700 dark:text-paper-100 text-sm font-semibold hover:bg-crate-200 dark:hover:bg-crate-600 transition">Cancel</button>
+        <button type="submit" class="flex-1 px-3 py-2.5 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-bold shadow-card transition">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Discount Modal -->
+<div id="discountModal" class="hidden fixed inset-0 z-[60] items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/50" data-close-modal="discountModal"></div>
+  <div class="relative bg-white dark:bg-crate-800 rounded-2xl shadow-cardHover w-full max-w-sm p-5">
+    <h3 class="font-display font-700 text-lg mb-4">Apply Discount</h3>
+    <form id="discountForm" class="flex flex-col gap-3">
+      <div class="flex rounded-xl overflow-hidden border border-leaf-200 dark:border-crate-600">
+        <label class="flex-1 text-center py-2 text-sm font-semibold cursor-pointer has-[:checked]:bg-leaf-600 has-[:checked]:text-white">
+          <input type="radio" name="df_type" value="flat" class="hidden" checked /> Flat (₹)
+        </label>
+        <label class="flex-1 text-center py-2 text-sm font-semibold cursor-pointer has-[:checked]:bg-leaf-600 has-[:checked]:text-white">
+          <input type="radio" name="df_type" value="percent" class="hidden" /> Percent (%)
+        </label>
+      </div>
+      <input id="df_value" type="number" min="0" step="0.01" placeholder="0" class="w-full px-3 py-2 rounded-xl bg-paper-50 dark:bg-crate-700 border border-leaf-200 dark:border-crate-600 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-leaf-400" />
+      <div class="flex gap-2">
+        <button type="button" id="clearDiscountBtn" class="flex-1 px-3 py-2.5 rounded-xl bg-crate-100 dark:bg-crate-700 text-crate-700 dark:text-paper-100 text-sm font-semibold hover:bg-crate-200 dark:hover:bg-crate-600 transition">Remove</button>
+        <button type="submit" class="flex-1 px-3 py-2.5 rounded-xl bg-leaf-600 hover:bg-leaf-700 text-white text-sm font-bold shadow-card transition">Apply</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Confirm Dialog Modal -->
+<div id="confirmModal" class="hidden fixed inset-0 z-[70] items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/50"></div>
+  <div class="relative bg-white dark:bg-crate-800 rounded-2xl shadow-cardHover w-full max-w-sm p-5">
+    <h3 id="confirmTitle" class="font-display font-700 text-lg mb-1.5">Are you sure?</h3>
+    <p id="confirmMsg" class="text-sm text-crate-600 dark:text-paper-200/60 mb-4"></p>
+    <div class="flex gap-2">
+      <button id="confirmCancelBtn" class="flex-1 px-3 py-2.5 rounded-xl bg-crate-100 dark:bg-crate-700 text-crate-700 dark:text-paper-100 text-sm font-semibold hover:bg-crate-200 dark:hover:bg-crate-600 transition">Cancel</button>
+      <button id="confirmOkBtn" class="flex-1 px-3 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold shadow-card transition">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toastContainer" class="fixed top-4 right-4 z-[80] flex flex-col gap-2 w-72"></div>
+
+<!-- Print bill area (hidden on screen, shown only on print) -->
+<div id="print-bill" class="p-6 font-body text-black">
+  <h1 class="text-xl font-bold mb-1">Kirana POS — Bill</h1>
+  <p id="print-date" class="text-xs mb-3"></p>
+  <table class="w-full text-sm border-collapse">
+    <thead>
+      <tr class="border-b border-black">
+        <th class="text-left py-1">Item</th>
+        <th class="text-right py-1">Qty</th>
+        <th class="text-right py-1">Price</th>
+        <th class="text-right py-1">Total</th>
+      </tr>
+    </thead>
+    <tbody id="print-rows"></tbody>
+  </table>
+  <div class="mt-3 text-sm flex flex-col items-end gap-0.5">
+    <p>Subtotal: <span id="print-subtotal"></span></p>
+    <p id="print-discount-row" class="hidden">Discount: <span id="print-discount"></span></p>
+    <p class="text-lg font-bold mt-1">Grand Total: <span id="print-total"></span></p>
+  </div>
+  <p class="text-xs mt-4 text-center">Thank you for shopping with us!</p>
+</div>
+
+<script>
+/* ============================================================
+   KIRANA POS — Application Logic
+   Organized as a single state-owning class (KiranaPOS) plus
+   small focused helper modules (Storage, Toast, Format).
+   ============================================================ */
+
+// ---------- Storage helper: wraps localStorage with JSON (de)serialization ----------
+const Storage = {
+  get(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) {
+      console.error('Storage read failed for', key, e);
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      console.error('Storage write failed for', key, e);
+      return false;
+    }
+  }
+};
+
+// ---------- Format helper: currency & number formatting (mono, aligned) ----------
+const Format = {
+  money(n) {
+    const v = Number(n) || 0;
+    return '₹' + v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  },
+  qty(n) {
+    const v = Number(n) || 0;
+    // Show up to 2 decimals, trimmed, for readability of fractional quantities
+    return (Math.round(v * 100) / 100).toString();
+  }
+};
+
+// ---------- Toast notifications ----------
+const Toast = {
+  container: null,
+  init() { this.container = document.getElementById('toastContainer'); },
+  show(message, type = 'success') {
+    const colors = {
+      success: 'bg-leaf-600',
+      error: 'bg-red-600',
+      info: 'bg-crate-700'
+    };
+    const el = document.createElement('div');
+    el.className = `toast-in ${colors[type] || colors.success} text-white text-sm font-medium px-4 py-3 rounded-xl shadow-cardHover flex items-center gap-2`;
+    el.innerHTML = `<span>${message}</span>`;
+    this.container.appendChild(el);
+    setTimeout(() => {
+      el.style.transition = 'opacity 0.3s, transform 0.3s';
+      el.style.opacity = '0';
+      el.style.transform = 'translateX(20px)';
+      setTimeout(() => el.remove(), 300);
+    }, 2200);
+  }
+};
+
+// ---------- Confirm dialog (promise-based, replaces window.confirm) ----------
+const Confirm = {
+  show(title, message) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('confirmModal');
+      document.getElementById('confirmTitle').textContent = title;
+      document.getElementById('confirmMsg').textContent = message;
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      const okBtn = document.getElementById('confirmOkBtn');
+      const cancelBtn = document.getElementById('confirmCancelBtn');
+
+      const cleanup = (result) => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+        resolve(result);
+      };
+      const onOk = () => cleanup(true);
+      const onCancel = () => cleanup(false);
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+    });
+  }
+};
+
+// ---------- Default seed data (used only on first run) ----------
+const SEED_CATEGORIES = ['Grocery', 'Dairy', 'Snacks', 'Beverages', 'Household'];
+const SEED_PRODUCTS = [
+  { id: 'p1', name: 'Toor Dal', price: 145, unit: 'kg', category: 'Grocery', favourite: true, image: '' },
+  { id: 'p2', name: 'Basmati Rice', price: 98, unit: 'kg', category: 'Grocery', favourite: true, image: '' },
+  { id: 'p3', name: 'Sunflower Oil', price: 132, unit: 'litre', category: 'Grocery', favourite: false, image: '' },
+  { id: 'p4', name: 'Amul Milk', price: 32, unit: 'packet', category: 'Dairy', favourite: true, image: '' },
+  { id: 'p5', name: 'Paneer', price: 90, unit: 'piece', category: 'Dairy', favourite: false, image: '' },
+  { id: 'p6', name: 'Curd Cup', price: 25, unit: 'piece', category: 'Dairy', favourite: false, image: '' },
+  { id: 'p7', name: 'Parle-G Biscuit', price: 10, unit: 'packet', category: 'Snacks', favourite: true, image: '' },
+  { id: 'p8', name: 'Lays Chips', price: 20, unit: 'packet', category: 'Snacks', favourite: false, image: '' },
+  { id: 'p9', name: 'Coca-Cola', price: 40, unit: 'litre', category: 'Beverages', favourite: false, image: '' },
+  { id: 'p10', name: 'Tata Tea Gold', price: 260, unit: 'box', category: 'Beverages', favourite: true, image: '' },
+  { id: 'p11', name: 'Surf Excel', price: 210, unit: 'kg', category: 'Household', favourite: false, image: '' },
+  { id: 'p12', name: 'Eggs', price: 7, unit: 'piece', category: 'Grocery', favourite: false, image: '' },
+];
+
+// ============================================================
+// Main Application Class
+// ============================================================
+class KiranaPOS {
+  constructor() {
+    // ---- Load persisted state (or seed defaults) ----
+    this.products = Storage.get('kirana_products', null) ?? SEED_PRODUCTS;
+    this.categories = Storage.get('kirana_categories', null) ?? SEED_CATEGORIES;
+    this.cart = Storage.get('kirana_cart', {});           // { productId: { qty, tempPrice } }
+    this.recent = Storage.get('kirana_recent', []);        // array of product ids, most-recent-first
+    this.discount = Storage.get('kirana_discount', { type: 'flat', value: 0 });
+    this.theme = Storage.get('kirana_theme', 'light');
+
+    // ---- Transient UI state ----
+    this.activeCategory = 'all';   // 'all' | 'favourites' | 'recent' | <category name>
+    this.searchTerm = '';
+    this.selectedCartId = null;    // for keyboard shortcuts (+/-/Delete)
+
+    this._persistAll(); // ensure first-run seed gets written to localStorage
+
+    this._cacheDom();
+    this._buildCartPanels();
+    this._bindEvents();
+    this._applyTheme();
+    this.renderCategories();
+    this.renderProducts();
+    this.renderCart();
+  }
+
+  // ---------------- DOM caching ----------------
+  _cacheDom() {
+    this.dom = {
+      productGrid: document.getElementById('productGrid'),
+      emptyProducts: document.getElementById('emptyProducts'),
+      gridTitle: document.getElementById('gridTitle'),
+      gridCount: document.getElementById('gridCount'),
+      categoryList: document.getElementById('categoryList'),
+      categoryListMobile: document.getElementById('categoryListMobile'),
+      searchInput: document.getElementById('searchInput'),
+      cartPanelDesktop: document.getElementById('cartPanelDesktop'),
+      cartPanelMobile: document.getElementById('cartPanelMobile'),
+      mobileCartCount: document.getElementById('mobileCartCount'),
+      mobileMiniBar: document.getElementById('mobileMiniBar'),
+      mobileMiniBarInfo: document.getElementById('mobileMiniBarInfo'),
+      mobileMiniBarTotal: document.getElementById('mobileMiniBarTotal'),
+    };
+  }
+
+  // ---------------- Persistence ----------------
+  _persistAll() {
+    Storage.set('kirana_products', this.products);
+    Storage.set('kirana_categories', this.categories);
+    Storage.set('kirana_cart', this.cart);
+    Storage.set('kirana_recent', this.recent);
+    Storage.set('kirana_discount', this.discount);
+    Storage.set('kirana_theme', this.theme);
+  }
+  saveProducts() { Storage.set('kirana_products', this.products); }
+  saveCategories() { Storage.set('kirana_categories', this.categories); }
+  saveCart() { Storage.set('kirana_cart', this.cart); }
+  saveRecent() { Storage.set('kirana_recent', this.recent); }
+  saveDiscount() { Storage.set('kirana_discount', this.discount); }
+
+  // ---------------- Theme ----------------
+  _applyTheme() {
+    document.documentElement.classList.toggle('dark', this.theme === 'dark');
+    document.getElementById('iconSun').classList.toggle('hidden', this.theme !== 'dark');
+    document.getElementById('iconMoon').classList.toggle('hidden', this.theme === 'dark');
+  }
+  toggleTheme() {
+    this.theme = this.theme === 'dark' ? 'light' : 'dark';
+    Storage.set('kirana_theme', this.theme);
+    this._applyTheme();
+  }
+
+  // ---------------- Category rendering ----------------
+  renderCategories() {
+    const buildRow = (cat) => {
+      const isActive = this.activeCategory === cat;
+      const row = document.createElement('div');
+      row.className = `group flex items-center justify-between px-2.5 py-2 rounded-lg cursor-pointer text-sm font-medium transition ${
+        isActive ? 'bg-leaf-600 text-white' : 'hover:bg-leaf-50 dark:hover:bg-crate-700 text-crate-700 dark:text-paper-200'
+      }`;
+      row.dataset.category = cat;
+      const count = this.products.filter(p => p.category === cat).length;
+      row.innerHTML = `
+        <span class="truncate">${this._escape(cat)}</span>
+        <span class="flex items-center gap-1.5">
+          <span class="text-[11px] opacity-70">${count}</span>
+          <button class="del-cat-btn opacity-0 group-hover:opacity-100 transition p-0.5 rounded hover:bg-black/10">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </span>`;
+      return row;
+    };
+
+    [this.dom.categoryList, this.dom.categoryListMobile].forEach(container => {
+      if (!container) return;
+      container.innerHTML = '';
+      this.categories.forEach(cat => container.appendChild(buildRow(cat)));
+    });
+
+    // Also refresh the category <select> in the product form
+    const sel = document.getElementById('pf_category');
+    if (sel) {
+      const current = sel.value;
+      sel.innerHTML = this.categories.map(c => `<option value="${this._escape(c)}">${this._escape(c)}</option>`).join('');
+      if (this.categories.includes(current)) sel.value = current;
+    }
+  }
+
+  addCategory(name) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (this.categories.some(c => c.toLowerCase() === trimmed.toLowerCase())) {
+      Toast.show('That category already exists', 'error');
+      return;
+    }
+    this.categories.push(trimmed);
+    this.saveCategories();
+    this.renderCategories();
+    Toast.show(`Category "${trimmed}" added`);
+  }
+
+  async deleteCategory(name) {
+    const inUse = this.products.some(p => p.category === name);
+    const msg = inUse
+      ? `"${name}" has products in it. Deleting it will move those products to Uncategorised.`
+      : `Delete category "${name}"?`;
+    const ok = await Confirm.show('Delete category', msg);
+    if (!ok) return;
+
+    this.categories = this.categories.filter(c => c !== name);
+    if (!this.categories.includes('Uncategorised') && inUse) this.categories.push('Uncategorised');
+    this.products.forEach(p => { if (p.category === name) p.category = 'Uncategorised'; });
+
+    if (this.activeCategory === name) this.activeCategory = 'all';
+
+    this.saveCategories();
+    this.saveProducts();
+    this.renderCategories();
+    this.renderProducts();
+    Toast.show(`Category "${name}" deleted`);
+  }
+
+  setActiveCategory(cat) {
+    this.activeCategory = cat;
+    document.querySelectorAll('.filter-chip').forEach(el => {
+      const isAll = el.dataset.filter === 'all' && cat === 'all';
+      const isFav = el.dataset.filter === 'favourites' && cat === 'favourites';
+      const isRecent = el.dataset.filter === 'recent' && cat === 'recent';
+      const active = isAll || isFav || isRecent;
+      el.classList.toggle('bg-leaf-600', active);
+      el.classList.toggle('text-white', active);
+      el.classList.toggle('bg-white', !active);
+      el.classList.toggle('dark:bg-crate-800', !active);
+      el.classList.toggle('text-crate-700', !active);
+      el.classList.toggle('dark:text-paper-200', !active);
+    });
+    this.renderCategories(); // refresh sidebar highlight
+    this.renderProducts();
+  }
+
+  // ---------------- Product filtering & rendering ----------------
+  _getFilteredProducts() {
+    let list = [...this.products];
+
+    if (this.activeCategory === 'favourites') {
+      list = list.filter(p => p.favourite);
+    } else if (this.activeCategory === 'recent') {
+      list = this.recent.map(id => this.products.find(p => p.id === id)).filter(Boolean);
+    } else if (this.activeCategory !== 'all') {
+      list = list.filter(p => p.category === this.activeCategory);
+    }
+
+    if (this.searchTerm.trim()) {
+      const q = this.searchTerm.trim().toLowerCase();
+      list = list.filter(p => p.name.toLowerCase().includes(q));
+    }
+
+    return list;
+  }
+
+  renderProducts() {
+    const list = this._getFilteredProducts();
+    const titles = { all: 'All Products', favourites: 'Favourites', recent: 'Recently Used' };
+    this.dom.gridTitle.textContent = titles[this.activeCategory] || this.activeCategory;
+    this.dom.gridCount.textContent = `${list.length} item${list.length === 1 ? '' : 's'}`;
+
+    this.dom.productGrid.innerHTML = '';
+
+    if (list.length === 0) {
+      this.dom.emptyProducts.classList.remove('hidden');
+      this.dom.emptyProducts.classList.add('flex');
+      return;
+    }
+    this.dom.emptyProducts.classList.add('hidden');
+    this.dom.emptyProducts.classList.remove('flex');
+
+    const tpl = document.getElementById('productCardTemplate');
+    list.forEach(p => {
+      const node = tpl.content.firstElementChild.cloneNode(true);
+      node.dataset.id = p.id;
+      node.querySelector('.prod-name').textContent = p.name;
+      node.querySelector('.prod-price').textContent = Format.money(p.price);
+      node.querySelector('.prod-unit').textContent = '/ ' + p.unit;
+
+      const img = node.querySelector('.prod-img');
+      const fallback = node.querySelector('.fallback-initial');
+      if (p.image) {
+        img.src = p.image;
+        img.classList.remove('hidden');
+        img.onerror = () => { img.classList.add('hidden'); fallback.classList.remove('hidden'); };
+        fallback.classList.add('hidden');
+      } else {
+        fallback.textContent = p.name.charAt(0).toUpperCase();
+      }
+
+      const star = node.querySelector('.fav-star');
+      if (p.favourite) {
+        star.setAttribute('fill', 'currentColor');
+        star.classList.add('text-turmeric-400');
+        star.classList.remove('text-crate-300');
+      } else {
+        star.setAttribute('fill', 'none');
+        star.classList.add('text-crate-300', 'dark:text-crate-500');
+      }
+
+      this.dom.productGrid.appendChild(node);
+    });
+  }
+
+  // ---------------- Cart panel construction (shared template, cloned twice) ----------------
+  _buildCartPanels() {
+    const tpl = document.getElementById('cartTemplate');
+    this.dom.cartPanelDesktop.innerHTML = '';
+    this.dom.cartPanelDesktop.appendChild(tpl.content.firstElementChild.cloneNode(true));
+    this.dom.cartPanelMobile.innerHTML = '';
+    this.dom.cartPanelMobile.appendChild(tpl.content.firstElementChild.cloneNode(true));
+  }
+
+  _cartRoots() {
+    return [this.dom.cartPanelDesktop.firstElementChild, this.dom.cartPanelMobile.firstElementChild].filter(Boolean);
+  }
+
+  // ---------------- Cart logic ----------------
+  addToCart(productId) {
+    const product = this.products.find(p => p.id === productId);
+    if (!product) return;
+
+    if (this.cart[productId]) {
+      this.cart[productId].qty += 1;
+    } else {
+      this.cart[productId] = { qty: 1, tempPrice: null };
+    }
+    this.selectedCartId = productId;
+
+    // Track recently used (most-recent-first, capped at 10, unique)
+    this.recent = [productId, ...this.recent.filter(id => id !== productId)].slice(0, 10);
+    this.saveRecent();
+    this.saveCart();
+    this.renderCart();
+
+    // Small pulse animation on the clicked card for feedback
+    const card = this.dom.productGrid.querySelector(`[data-id="${productId}"]`);
+    if (card) { card.classList.add('pulse-add'); setTimeout(() => card.classList.remove('pulse-add'), 220); }
+  }
+
+  updateQty(productId, newQty) {
+    if (!this.cart[productId]) return;
+    const q = Math.max(0, Number(newQty) || 0);
+    if (q === 0) {
+      this.removeFromCart(productId);
+      return;
+    }
+    this.cart[productId].qty = q;
+    this.saveCart();
+    this.renderCart();
+  }
+
+  incrementQty(productId, step = 1) {
+    if (!this.cart[productId]) return;
+    this.updateQty(productId, this.cart[productId].qty + step);
+  }
+  decrementQty(productId, step = 1) {
+    if (!this.cart[productId]) return;
+    this.updateQty(productId, this.cart[productId].qty - step);
+  }
+
+  updateTempPrice(productId, price) {
+    if (!this.cart[productId]) return;
+    const p = price === '' || price === null ? null : Math.max(0, Number(price) || 0);
+    this.cart[productId].tempPrice = p;
+    this.saveCart();
+    this.renderCart();
+  }
+
+  removeFromCart(productId) {
+    delete this.cart[productId];
+    if (this.selectedCartId === productId) this.selectedCartId = null;
+    this.saveCart();
+    this.renderCart();
+  }
+
+  async clearCart() {
+    if (Object.keys(this.cart).length === 0) return;
+    const ok = await Confirm.show('Clear cart', 'Remove all items from the current bill?');
+    if (!ok) return;
+    this.cart = {};
+    this.selectedCartId = null;
+    this.saveCart();
+    this.renderCart();
+    Toast.show('Cart cleared', 'info');
+  }
+
+  async newBill() {
+    if (Object.keys(this.cart).length > 0) {
+      const ok = await Confirm.show('Start new bill', 'This clears the current cart and discount. Continue?');
+      if (!ok) return;
+    }
+    this.cart = {};
+    this.discount = { type: 'flat', value: 0 };
+    this.selectedCartId = null;
+    this.saveCart();
+    this.saveDiscount();
+    this.renderCart();
+    Toast.show('New bill started');
+  }
+
+  _cartLines() {
+    return Object.entries(this.cart).map(([id, entry]) => {
+      const product = this.products.find(p => p.id === id);
+      if (!product) return null;
+      const price = entry.tempPrice !== null && entry.tempPrice !== undefined ? entry.tempPrice : product.price;
+      return { id, product, qty: entry.qty, price, lineTotal: price * entry.qty, isTempPrice: entry.tempPrice !== null };
+    }).filter(Boolean);
+  }
+
+  calculateTotals() {
+    const lines = this._cartLines();
+    const subtotal = lines.reduce((sum, l) => sum + l.lineTotal, 0);
+    let discountAmount = 0;
+    if (this.discount.value > 0) {
+      discountAmount = this.discount.type === 'percent'
+        ? subtotal * (this.discount.value / 100)
+        : this.discount.value;
+      discountAmount = Math.min(discountAmount, subtotal); // never exceed subtotal
+    }
+    const grandTotal = Math.max(0, subtotal - discountAmount);
+    const uniqueProducts = lines.length;
+    const totalQty = lines.reduce((sum, l) => sum + l.qty, 0);
+    return { lines, subtotal, discountAmount, grandTotal, uniqueProducts, totalQty };
+  }
+
+  renderCart() {
+    const { lines, subtotal, discountAmount, grandTotal, uniqueProducts, totalQty } = this.calculateTotals();
+
+    this._cartRoots().forEach(root => {
+      const itemsWrap = root.querySelector('.cart-items');
+      const emptyWrap = root.querySelector('.cart-empty');
+      itemsWrap.innerHTML = '';
+
+      if (lines.length === 0) {
+        itemsWrap.classList.add('hidden');
+        emptyWrap.classList.remove('hidden');
+        emptyWrap.classList.add('flex');
+      } else {
+        itemsWrap.classList.remove('hidden');
+        emptyWrap.classList.add('hidden');
+        emptyWrap.classList.remove('flex');
+
+        const tpl = document.getElementById('cartItemTemplate');
+        lines.forEach(line => {
+          const node = tpl.content.firstElementChild.cloneNode(true);
+          node.dataset.id = line.id;
+          node.classList.toggle('selected-row', this.selectedCartId === line.id);
+
+          node.querySelector('.item-name').textContent = line.product.name;
+          node.querySelector('.item-price-line').textContent =
+            `${Format.money(line.price)} / ${line.product.unit}` + (line.isTempPrice ? '  (edited)' : '');
+
+          const qtyInput = node.querySelector('.qty-input');
+          qtyInput.value = Format.qty(line.qty);
+          node.querySelector('.unit-label').textContent = line.product.unit;
+          node.querySelector('.line-total').textContent = Format.money(line.lineTotal);
+
+          itemsWrap.appendChild(node);
+        });
+      }
+
+      root.querySelector('.cart-meta').textContent = `${uniqueProducts} product${uniqueProducts === 1 ? '' : 's'} · ${Format.qty(totalQty)} qty`;
+      root.querySelector('.cart-subtotal').textContent = Format.money(subtotal);
+
+      const discountRow = root.querySelector('.discount-row');
+      if (discountAmount > 0) {
+        discountRow.classList.remove('hidden');
+        discountRow.classList.add('flex');
+        const label = this.discount.type === 'percent' ? `Discount (${this.discount.value}%)` : 'Discount';
+        root.querySelector('.discount-label').textContent = label;
+        root.querySelector('.cart-discount').textContent = '− ' + Format.money(discountAmount);
+      } else {
+        discountRow.classList.add('hidden');
+        discountRow.classList.remove('flex');
+      }
+
+      root.querySelector('.cart-total').textContent = Format.money(grandTotal);
+    });
+
+    // Mobile badges
+    this.dom.mobileCartCount.textContent = uniqueProducts;
+    if (lines.length > 0) {
+      this.dom.mobileMiniBar.classList.remove('hidden');
+      this.dom.mobileMiniBar.classList.add('flex');
+      this.dom.mobileMiniBarInfo.textContent = `${uniqueProducts} item${uniqueProducts === 1 ? '' : 's'} in cart`;
+      this.dom.mobileMiniBarTotal.textContent = Format.money(grandTotal);
+    } else {
+      this.dom.mobileMiniBar.classList.add('hidden');
+      this.dom.mobileMiniBar.classList.remove('flex');
+    }
+  }
+
+  // ---------------- Product CRUD ----------------
+  openProductModal(productId = null) {
+    const modal = document.getElementById('productModal');
+    const form = document.getElementById('productForm');
+    form.reset();
+    document.getElementById('pf_customUnitWrap').classList.add('hidden');
+    this._updateImagePreview('');
+    this.renderCategories(); // ensure category select is fresh
+
+    if (productId) {
+      const p = this.products.find(pr => pr.id === productId);
+      if (!p) return;
+      document.getElementById('productModalTitle').textContent = 'Edit Product';
+      document.getElementById('pf_id').value = p.id;
+      document.getElementById('pf_name').value = p.name;
+      document.getElementById('pf_price').value = p.price;
+      const unitSelect = document.getElementById('pf_unit');
+      const standardUnits = ['kg','gram','litre','ml','piece','packet','box','dozen'];
+      if (standardUnits.includes(p.unit)) {
+        unitSelect.value = p.unit;
+      } else {
+        unitSelect.value = 'custom';
+        document.getElementById('pf_customUnitWrap').classList.remove('hidden');
+        document.getElementById('pf_customUnit').value = p.unit;
+      }
+      document.getElementById('pf_category').value = p.category;
+      document.getElementById('pf_image').value = p.image || '';
+      document.getElementById('pf_fav').checked = !!p.favourite;
+      this._updateImagePreview(p.image || '');
+    } else {
+      document.getElementById('productModalTitle').textContent = 'Add Product';
+      document.getElementById('pf_id').value = '';
+      if (this.categories.length) document.getElementById('pf_category').value = this.categories[0];
+    }
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.getElementById('pf_name').focus();
+  }
+
+  _updateImagePreview(src) {
+    const preview = document.getElementById('pf_imagePreview');
+    const clearBtn = document.getElementById('pf_imageClear');
+    if (src) {
+      preview.src = src;
+      preview.classList.remove('hidden');
+      clearBtn.classList.remove('hidden');
+      preview.onerror = () => preview.classList.add('hidden');
+    } else {
+      preview.classList.add('hidden');
+      preview.src = '';
+      clearBtn.classList.add('hidden');
+    }
+  }
+
+  saveProductFromForm() {
+    const id = document.getElementById('pf_id').value;
+    const name = document.getElementById('pf_name').value.trim();
+    const price = Number(document.getElementById('pf_price').value);
+    let unit = document.getElementById('pf_unit').value;
+    if (unit === 'custom') {
+      unit = document.getElementById('pf_customUnit').value.trim() || 'unit';
+    }
+    const category = document.getElementById('pf_category').value;
+    const image = document.getElementById('pf_image').value.trim();
+    const favourite = document.getElementById('pf_fav').checked;
+
+    if (!name || isNaN(price) || price < 0) {
+      Toast.show('Please enter a valid name and price', 'error');
+      return;
+    }
+
+    if (id) {
+      const p = this.products.find(pr => pr.id === id);
+      Object.assign(p, { name, price, unit, category, image, favourite });
+      Toast.show(`"${name}" updated`);
+    } else {
+      const newProduct = { id: 'p' + Date.now(), name, price, unit, category, image, favourite };
+      this.products.push(newProduct);
+      Toast.show(`"${name}" added`);
+    }
+
+    this.saveProducts();
+    this.renderProducts();
+    this.renderCategories();
+    this.closeModal('productModal');
+  }
+
+  async deleteProduct(productId) {
+    const p = this.products.find(pr => pr.id === productId);
+    if (!p) return;
+    const ok = await Confirm.show('Delete product', `Delete "${p.name}"? This can't be undone.`);
+    if (!ok) return;
+
+    this.products = this.products.filter(pr => pr.id !== productId);
+    delete this.cart[productId];
+    this.recent = this.recent.filter(id => id !== productId);
+
+    this.saveProducts();
+    this.saveCart();
+    this.saveRecent();
+    this.renderProducts();
+    this.renderCart();
+    Toast.show(`"${p.name}" deleted`, 'info');
+  }
+
+  toggleFavourite(productId) {
+    const p = this.products.find(pr => pr.id === productId);
+    if (!p) return;
+    p.favourite = !p.favourite;
+    this.saveProducts();
+    this.renderProducts();
+    if (this.activeCategory === 'favourites') this.renderProducts();
+  }
+
+  // ---------------- Import / Export ----------------
+  exportProducts() {
+    const payload = { products: this.products, categories: this.categories, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kirana-products-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    Toast.show('Products exported');
+  }
+
+  importProductsFromFile(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        const products = Array.isArray(data) ? data : data.products;
+        const categories = Array.isArray(data) ? null : data.categories;
+        if (!Array.isArray(products)) throw new Error('Invalid file format');
+
+        // Basic validation + normalization of each product
+        this.products = products.map((p, i) => ({
+          id: p.id || ('p' + Date.now() + i),
+          name: String(p.name || 'Unnamed'),
+          price: Number(p.price) || 0,
+          unit: p.unit || 'piece',
+          category: p.category || 'Uncategorised',
+          favourite: !!p.favourite,
+          image: p.image || ''
+        }));
+
+        if (Array.isArray(categories) && categories.length) {
+          this.categories = [...new Set(categories)];
+        } else {
+          this.categories = [...new Set(this.products.map(p => p.category))];
+        }
+
+        this.saveProducts();
+        this.saveCategories();
+        this.renderCategories();
+        this.renderProducts();
+        Toast.show(`Imported ${this.products.length} products`);
+      } catch (err) {
+        console.error(err);
+        Toast.show('Import failed — invalid JSON file', 'error');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // ---------------- Discount ----------------
+  applyDiscount(type, value) {
+    this.discount = { type, value: Math.max(0, Number(value) || 0) };
+    this.saveDiscount();
+    this.renderCart();
+  }
+
+  // ---------------- Print ----------------
+  printBill() {
+    const { lines, subtotal, discountAmount, grandTotal } = this.calculateTotals();
+    if (lines.length === 0) {
+      Toast.show('Cart is empty — nothing to print', 'error');
+      return;
+    }
+    document.getElementById('print-date').textContent = new Date().toLocaleString('en-IN');
+    const rows = document.getElementById('print-rows');
+    rows.innerHTML = lines.map(l => `
+      <tr class="border-b border-gray-300">
+        <td class="py-1">${this._escape(l.product.name)}</td>
+        <td class="text-right py-1">${Format.qty(l.qty)} ${this._escape(l.product.unit)}</td>
+        <td class="text-right py-1">${Format.money(l.price)}</td>
+        <td class="text-right py-1">${Format.money(l.lineTotal)}</td>
+      </tr>`).join('');
+    document.getElementById('print-subtotal').textContent = Format.money(subtotal);
+    const discRow = document.getElementById('print-discount-row');
+    if (discountAmount > 0) {
+      discRow.classList.remove('hidden');
+      document.getElementById('print-discount').textContent = '− ' + Format.money(discountAmount);
+    } else {
+      discRow.classList.add('hidden');
+    }
+    document.getElementById('print-total').textContent = Format.money(grandTotal);
+    window.print();
+  }
+
+  // ---------------- Modal helpers ----------------
+  closeModal(id) {
+    const modal = document.getElementById(id);
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+  }
+  openModal(id) {
+    const modal = document.getElementById(id);
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  }
+
+  _escape(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ================================================================
+  // Event binding — uses event delegation for dynamic lists (grid, cart, categories)
+  // ================================================================
+  _bindEvents() {
+    // ---- Search ----
+    this.dom.searchInput.addEventListener('input', (e) => {
+      this.searchTerm = e.target.value;
+      this.renderProducts();
+    });
+
+    // ---- Filter chips (All / Favourites / Recent) ----
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => this.setActiveCategory(chip.dataset.filter));
+    });
+
+    // ---- Category sidebar (delegated — works for both desktop + mobile lists) ----
+    [this.dom.categoryList, this.dom.categoryListMobile].forEach(list => {
+      if (!list) return;
+      list.addEventListener('click', (e) => {
+        const delBtn = e.target.closest('.del-cat-btn');
+        const row = e.target.closest('[data-category]');
+        if (!row) return;
+        if (delBtn) {
+          e.stopPropagation();
+          this.deleteCategory(row.dataset.category);
+        } else {
+          this.setActiveCategory(row.dataset.category);
+          document.getElementById('mobileCatDrawer').classList.add('hidden');
+        }
+      });
+    });
+
+    document.getElementById('addCategoryBtn').addEventListener('click', () => {
+      document.getElementById('cf_name').value = '';
+      this.openModal('categoryModal');
+      document.getElementById('cf_name').focus();
+    });
+    document.getElementById('addCategoryBtnMobile').addEventListener('click', () => {
+      document.getElementById('cf_name').value = '';
+      this.openModal('categoryModal');
+    });
+    document.getElementById('categoryForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.addCategory(document.getElementById('cf_name').value);
+      this.closeModal('categoryModal');
+    });
+
+    // ---- Product grid (delegated: click card = add to cart; star = favourite; edit/delete icons) ----
+    this.dom.productGrid.addEventListener('click', (e) => {
+      const card = e.target.closest('.product-card');
+      if (!card) return;
+      const id = card.dataset.id;
+
+      if (e.target.closest('.fav-toggle')) { e.stopPropagation(); this.toggleFavourite(id); return; }
+      if (e.target.closest('.edit-product')) { e.stopPropagation(); this.openProductModal(id); return; }
+      if (e.target.closest('.delete-product')) { e.stopPropagation(); this.deleteProduct(id); return; }
+
+      this.addToCart(id);
+    });
+
+    document.getElementById('addProductBtn').addEventListener('click', () => this.openProductModal());
+    document.body.addEventListener('click', (e) => {
+      if (e.target.closest('[data-open-add]')) this.openProductModal();
+    });
+
+    document.getElementById('productForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.saveProductFromForm();
+    });
+    document.getElementById('pf_unit').addEventListener('change', (e) => {
+      document.getElementById('pf_customUnitWrap').classList.toggle('hidden', e.target.value !== 'custom');
+    });
+
+    // Image: typed URL updates the preview live
+    document.getElementById('pf_image').addEventListener('input', (e) => {
+      this._updateImagePreview(e.target.value.trim());
+    });
+    // Image: uploaded file is read as a base64 data URL and stored directly in
+    // pf_image (same field as a typed URL), so it saves to localStorage with the product
+    document.getElementById('pf_imageFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) {
+        Toast.show('Please choose an image file', 'error');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        document.getElementById('pf_image').value = ev.target.result;
+        this._updateImagePreview(ev.target.result);
+      };
+      reader.onerror = () => Toast.show('Could not read that image', 'error');
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    });
+    document.getElementById('pf_imageClear').addEventListener('click', () => {
+      document.getElementById('pf_image').value = '';
+      this._updateImagePreview('');
+    });
+
+    // ---- Modal close (backdrop + explicit close buttons) ----
+    document.querySelectorAll('[data-close-modal]').forEach(el => {
+      el.addEventListener('click', () => this.closeModal(el.dataset.closeModal));
+    });
+
+    // ---- Cart panels (delegated, applies to both desktop & mobile clones) ----
+    this._cartRoots().forEach(root => this._bindCartRoot(root));
+
+    // ---- Discount modal ----
+    document.getElementById('discountForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const type = document.querySelector('input[name="df_type"]:checked').value;
+      const value = document.getElementById('df_value').value;
+      this.applyDiscount(type, value);
+      this.closeModal('discountModal');
+    });
+    document.getElementById('clearDiscountBtn').addEventListener('click', () => {
+      this.applyDiscount('flat', 0);
+      this.closeModal('discountModal');
+    });
+
+    // ---- Theme toggle ----
+    document.getElementById('themeToggle').addEventListener('click', () => this.toggleTheme());
+
+    // ---- Import / Export ----
+    document.getElementById('exportBtn').addEventListener('click', () => this.exportProducts());
+    document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', (e) => {
+      if (e.target.files[0]) this.importProductsFromFile(e.target.files[0]);
+      e.target.value = '';
+    });
+
+    // ---- Mobile drawers ----
+    document.getElementById('mobileCatBtn').addEventListener('click', () => {
+      document.getElementById('mobileCatDrawer').classList.remove('hidden');
+      document.getElementById('mobileCatDrawer').classList.add('flex');
+    });
+    document.querySelectorAll('[data-close-mobile-cat]').forEach(el => {
+      el.addEventListener('click', () => document.getElementById('mobileCatDrawer').classList.add('hidden'));
+    });
+    const openMobileCart = () => {
+      document.getElementById('mobileCartDrawer').classList.remove('hidden');
+      document.getElementById('mobileCartDrawer').classList.add('flex');
+    };
+    document.getElementById('mobileCartBtn').addEventListener('click', openMobileCart);
+    document.getElementById('mobileMiniBarBtn').addEventListener('click', openMobileCart);
+    document.querySelectorAll('[data-close-mobile-cart]').forEach(el => {
+      el.addEventListener('click', () => document.getElementById('mobileCartDrawer').classList.add('hidden'));
+    });
+
+    // ---- Keyboard shortcuts ----
+    document.addEventListener('keydown', (e) => this._handleKeydown(e));
+  }
+
+  // Cart root event delegation: quantity buttons, editable inputs, price edit, remove, row select
+  _bindCartRoot(root) {
+    if (!root) return;
+
+    root.querySelector('.cart-items').addEventListener('click', (e) => {
+      const row = e.target.closest('.cart-row');
+      if (!row) return;
+      const id = row.dataset.id;
+
+      if (e.target.closest('.remove-item')) { this.removeFromCart(id); return; }
+      if (e.target.closest('.qty-inc')) { this.incrementQty(id); return; }
+      if (e.target.closest('.qty-dec')) { this.decrementQty(id); return; }
+      if (e.target.closest('.qty-input')) return; // let the input handle its own focus
+
+      // Select the row (for keyboard shortcuts) — sync selection across both cart clones
+      this.selectedCartId = id;
+      this._refreshSelection();
+    });
+
+    root.querySelector('.cart-items').addEventListener('change', (e) => {
+      const row = e.target.closest('.cart-row');
+      if (!row) return;
+      const id = row.dataset.id;
+      if (e.target.classList.contains('qty-input')) this.updateQty(id, e.target.value);
+    });
+
+    // Click on the price line lets the cashier type a temporary price for this bill only
+    root.querySelector('.cart-items').addEventListener('dblclick', (e) => {
+      const priceEl = e.target.closest('.item-price-line');
+      if (!priceEl) return;
+      const row = e.target.closest('.cart-row');
+      const id = row.dataset.id;
+      const current = this.cart[id]?.tempPrice ?? this.products.find(p => p.id === id)?.price ?? 0;
+      const input = prompt('Set a temporary price for this bill (₹):', current);
+      if (input === null) return;
+      this.updateTempPrice(id, input);
+    });
+
+    root.querySelector('.discount-btn').addEventListener('click', () => {
+      const typeInput = document.querySelector(`input[name="df_type"][value="${this.discount.type}"]`);
+      if (typeInput) typeInput.checked = true;
+      document.getElementById('df_value').value = this.discount.value || '';
+      this.openModal('discountModal');
+    });
+
+    root.querySelector('.new-bill-btn').addEventListener('click', () => this.newBill());
+    root.querySelector('.clear-cart-btn').addEventListener('click', () => this.clearCart());
+    root.querySelector('.print-btn').addEventListener('click', () => this.printBill());
+  }
+
+  _refreshSelection() {
+    this._cartRoots().forEach(root => {
+      root.querySelectorAll('.cart-row').forEach(row => {
+        row.classList.toggle('selected-row', row.dataset.id === this.selectedCartId);
+      });
+    });
+  }
+
+  // ---------------- Keyboard shortcuts ----------------
+  _handleKeydown(e) {
+    const tag = document.activeElement.tagName;
+    const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable;
+
+    // Ctrl/Cmd combos always active
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      this.newBill();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      this.saveProducts();
+      Toast.show('Products saved');
+      return;
+    }
+
+    // '/' focuses search — unless already typing somewhere
+    if (e.key === '/' && !isTyping) {
+      e.preventDefault();
+      this.dom.searchInput.focus();
+      return;
+    }
+
+    // Enter inside the search box adds the first visible product
+    if (e.key === 'Enter' && document.activeElement === this.dom.searchInput) {
+      const first = this._getFilteredProducts()[0];
+      if (first) this.addToCart(first.id);
+      return;
+    }
+
+    // The rest only apply when NOT typing in a field (so users can type quantities freely)
+    if (isTyping) return;
+
+    if (e.key === '+' && this.selectedCartId) {
+      e.preventDefault();
+      this.incrementQty(this.selectedCartId);
+    } else if (e.key === '-' && this.selectedCartId) {
+      e.preventDefault();
+      this.decrementQty(this.selectedCartId);
+    } else if (e.key === 'Delete' && this.selectedCartId) {
+      e.preventDefault();
+      this.removeFromCart(this.selectedCartId);
+    }
+  }
+}
+
+// ---------------- Boot ----------------
+document.addEventListener('DOMContentLoaded', () => {
+  Toast.init();
+  window.pos = new KiranaPOS(); // exposed on window for easy debugging in console
+});
+</script>
+</body>
+</html>
